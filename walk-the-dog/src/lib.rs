@@ -4,8 +4,6 @@ use wasm_bindgen::JsCast;
 
 #[wasm_bindgen(start)]
 pub fn main_js() -> Result<(), JsValue> {
-    // すべてのパニックをブラウザのコンソールにリダイレクトする。
-    // デバッグ時はこれが有効になっている。プロダクション時はフィーチャを消す。(Cargo で管理できる)
     console_error_panic_hook::set_once();
 
     let window = web_sys::window().unwrap();
@@ -22,11 +20,26 @@ pub fn main_js() -> Result<(), JsValue> {
         .dyn_into::<web_sys::CanvasRenderingContext2d>()
         .unwrap();
 
-    let top = (300.0, 0.0);
-    let left = (0.0, 600.0);
-    let right = (600.0, 600.0);
+    wasm_bindgen_futures::spawn_local(async move {
+        let (success_tx, success_rx) = futures::channel::oneshot::channel::<()>();
+        let image = web_sys::HtmlImageElement::new().unwrap();
 
-    sierpinski(&context, [top, left, right], (200, 50, 100), 5);
+        let callback = Closure::once(|| {
+            success_tx.send(());
+        });
+        image.set_onload(Some(callback.as_ref().unchecked_ref()));
+        callback.forget();
+
+        image.set_src("Idle (1).png");
+        success_rx.await;
+        context.draw_image_with_html_image_element(&image, 0.0, 0.0);
+        sierpinski(
+            &context,
+            [(300.0, 0.0), (0.0, 600.0), (600.0, 600.0)],
+            (200, 50, 100),
+            5,
+        );
+    });
 
     Ok(())
 }
