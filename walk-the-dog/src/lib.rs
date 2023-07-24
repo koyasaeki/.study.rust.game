@@ -15,37 +15,6 @@ pub fn main_js() -> Result<(), JsValue> {
     let context = get_canvas_context();
 
     spawn_local(async move {
-        let (sender, receiver) = channel::<Result<(), JsValue>>();
-
-        // 複数のスレッド間で sender を共有するために Mutex 型にする。
-        // 複数のスレッドで sender を使いたいので Rc 型にする。
-        let success_sender = Rc::new(Mutex::new(Some(sender)));
-        // sender をエラー発生時にも使いたいのでカウンタを増やす。
-        let error_sender = Rc::clone(&success_sender);
-        let image = HtmlImageElement::new().unwrap();
-
-        let success_callback = Closure::once(move || {
-            if let Some(success_sender) = success_sender.lock().ok().and_then(|mut opt| opt.take())
-            {
-                success_sender.send(Ok(()));
-            }
-        });
-        let error_callback = Closure::once(move |err| {
-            if let Some(error_sender) = error_sender.lock().ok().and_then(|mut opt| opt.take()) {
-                error_sender.send(Err(err));
-            }
-        });
-
-        image.set_src("Idle (1).png");
-
-        // 画像の設定に成功したときの処理
-        image.set_onload(Some(success_callback.as_ref().unchecked_ref()));
-        // 画像の設定に失敗したときの処理
-        image.set_onerror(Some(error_callback.as_ref().unchecked_ref()));
-
-        receiver.await;
-        context.draw_image_with_html_image_element(&image, 0.0, 0.0);
-
         let json = fetch_json("rhb.json")
             .await
             .expect("Could not fetch rhb.json");
@@ -84,18 +53,35 @@ pub fn main_js() -> Result<(), JsValue> {
 
         receiver.await;
 
-        let sprite = sheet.frames.get("Run (1).png").expect("Cell not found");
-        context.draw_image_with_html_image_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
-            &image,
-            sprite.frame.x.into(),
-            sprite.frame.y.into(),
-            sprite.frame.w.into(),
-            sprite.frame.h.into(),
-            300.0,
-            300.0,
-            sprite.frame.w.into(),
-            sprite.frame.h.into(),
-        );
+        let mut frame = -1;
+        // wrap とか Box とか FnMut とかわからんけど一旦進めておく。
+        let interval_callback = Closure::wrap(Box::new(move || {
+            frame = (frame + 1) % 8;
+            let frame_name = format!("Run ({}).png", frame + 1);
+
+            context.clear_rect(0.0, 0.0, 600.0, 600.0);
+
+            let sprite = sheet.frames.get(&frame_name).expect("Cell not found");
+            context.draw_image_with_html_image_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
+                &image,
+                sprite.frame.x.into(),
+                sprite.frame.y.into(),
+                sprite.frame.w.into(),
+                sprite.frame.h.into(),
+                300.0,
+                300.0,
+                sprite.frame.w.into(),
+                sprite.frame.h.into(),
+            );
+        }) as Box<dyn FnMut()>);
+
+        web_sys::window()
+            .unwrap()
+            .set_interval_with_callback_and_timeout_and_arguments_0(
+                interval_callback.as_ref().unchecked_ref(),
+                50,
+            );
+        interval_callback.forget();
     });
 
     Ok(())
