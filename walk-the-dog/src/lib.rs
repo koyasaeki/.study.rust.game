@@ -1,57 +1,32 @@
-use futures::channel::oneshot::channel;
+#[macro_use]
+mod browser;
+mod engine;
+
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
+
+use browser::LoopClosure;
 use serde::Deserialize;
-use std::collections::HashMap;
-use std::rc::Rc;
-use std::sync::Mutex;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
-use wasm_bindgen_futures::spawn_local;
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, HtmlImageElement, Response};
 
 #[wasm_bindgen(start)]
 pub fn main_js() -> Result<(), JsValue> {
     console_error_panic_hook::set_once();
 
-    let context = get_canvas_context();
+    let context = browser::context().expect("No Context Found");
 
-    spawn_local(async move {
-        let json = fetch_json("rhb.json")
+    browser::spawn_local(async move {
+        let sheet: Sheet = serde_wasm_bindgen::from_value(
+            browser::fetch_json("rhb.json")
+                .await
+                .expect("Could not fetch rhb.json"),
+        )
+        .expect("Could not convert rhb.json into a Sheet structure");
+
+        let image = engine::load_iamge("rhb.png")
             .await
-            .expect("Could not fetch rhb.json");
-        // deprecated だけど一旦このまま進む。
-        let sheet: Sheet = json
-            .into_serde()
-            .expect("Could not convert rhg.json into a Sheet structure");
+            .expect("Could not load rhb.png");
 
-        let (sender, receiver) = channel::<Result<(), JsValue>>();
-
-        // 複数のスレッド間で sender を共有するために Mutex 型にする。
-        // 複数のスレッドで sender を使いたいので Rc 型にする。
-        let success_sender = Rc::new(Mutex::new(Some(sender)));
-        // sender をエラー発生時にも使いたいのでカウンタを増やす。
-        let error_sender = Rc::clone(&success_sender);
-        let image = HtmlImageElement::new().unwrap();
-
-        let success_callback = Closure::once(move || {
-            if let Some(success_sender) = success_sender.lock().ok().and_then(|mut opt| opt.take())
-            {
-                success_sender.send(Ok(()));
-            }
-        });
-        let error_callback = Closure::once(move |err| {
-            if let Some(error_sender) = error_sender.lock().ok().and_then(|mut opt| opt.take()) {
-                error_sender.send(Err(err));
-            }
-        });
-
-        image.set_src("rhb.png");
-
-        // 画像の設定に成功したときの処理
-        image.set_onload(Some(success_callback.as_ref().unchecked_ref()));
-        // 画像の設定に失敗したときの処理
-        image.set_onerror(Some(error_callback.as_ref().unchecked_ref()));
-
-        receiver.await;
+        let f: Rc<RefCell<Option<LoopClosure>>> = Rc::new(RefCell::new(None));
 
         let mut frame = -1;
         // wrap とか Box とか FnMut とかわからんけど一旦進めておく。
@@ -85,32 +60,6 @@ pub fn main_js() -> Result<(), JsValue> {
     });
 
     Ok(())
-}
-
-fn get_canvas_context() -> CanvasRenderingContext2d {
-    let window = web_sys::window().unwrap();
-    let document = window.document().unwrap();
-    let canvas = document
-        .get_element_by_id("canvas")
-        .unwrap()
-        .dyn_into::<HtmlCanvasElement>()
-        .unwrap();
-
-    canvas
-        .get_context("2d")
-        .unwrap()
-        .unwrap()
-        .dyn_into::<CanvasRenderingContext2d>()
-        .unwrap()
-}
-
-async fn fetch_json(json_path: &str) -> Result<JsValue, JsValue> {
-    let window = web_sys::window().unwrap();
-    let response_value =
-        wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(json_path)).await?;
-    let response: Response = response_value.dyn_into()?;
-
-    wasm_bindgen_futures::JsFuture::from(response.json()?).await
 }
 
 #[derive(Deserialize)]
